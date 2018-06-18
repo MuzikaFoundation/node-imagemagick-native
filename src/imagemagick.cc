@@ -667,10 +667,6 @@ NAN_METHOD(GeneratePreview) {
         return Nan::ThrowError("generatePreview() requires 1 (option) argument!");
     }
 
-    if ( !info[ 0 ]->IsString() ) {
-        return Nan::ThrowError("generatePreview()'s 1st argument should be a string");
-    }
-
     if( ! isSync && ! info[ 1 ]->IsFunction() ) {
         return Nan::ThrowError("generatePreview()'s 2nd argument should be a function");
     }
