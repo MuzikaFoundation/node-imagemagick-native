@@ -109,6 +109,26 @@ struct composite_im_ctx : im_ctx_base {
 
     composite_im_ctx() {}
 };
+// context for generating preview
+struct gen_preview_ctx {
+    Nan::Callback * callback;
+    std::string pdfPath;
+    Magick::Blob* dstBlobs;
+    size_t dstLength;
+    int ignoreWarnings;
+    int debug;
+    std::string error;
+
+    gen_preview_ctx() {
+        dstBlobs = NULL;
+    }
+    ~gen_preview_ctx() {
+        if (dstBlobs) {
+            delete[] dstBlobs;
+            dstBlobs = NULL;
+        }
+    }
+};
 
 
 inline Local<Value> WrapPointer(char *ptr, size_t length) {
@@ -548,6 +568,144 @@ void GeneratedBlobAfter(uv_work_t* req) {
 #else
         FatalException(try_catch);
 #endif
+    }
+}
+
+
+void DoGeneratePreview(uv_work_t* req) {
+    gen_preview_ctx* context = static_cast<gen_preview_ctx*>(req->data);
+
+    std::list<Magick::Image> images;
+
+    int ignoreWarnings = context->ignoreWarnings;
+    int debug = context->debug;
+
+    try {
+        Magick::readImages(&images, context->pdfPath);
+    } catch (std::exception& err) {
+        std::string what (err.what());
+        std::string message = std::string("image.read failed with error: ") + what;
+        std::size_t found = what.find( "warn" );
+        if (ignoreWarnings && (found != std::string::npos)) {
+            if (debug) printf("warning: %s\n", message.c_str());
+        }
+        else {
+            context->error = message;
+            return;
+        }
+    } catch (...) {
+        context->error = "unhandled error";
+        return;
+    }
+
+    int index;
+    context->dstLength = images.size();
+    context->dstBlobs = new Magick::Blob[images.size()];
+
+    std::list<Magick::Image>::iterator pdfImage;
+    const std::list<Magick::Image>::iterator& pdfEnd = images.end();
+
+    for ( pdfImage = images.begin(), index = 0; pdfImage != pdfEnd; ++pdfImage, ++index ) {
+        pdfImage->colorSpace(Magick::RGBColorspace);
+        pdfImage->magick("PNG");
+
+        if (index) pdfImage->blur(0, 3);
+        try {
+            pdfImage->write( &context->dstBlobs[index] );
+        } catch (std::exception& err) {
+            std::string message = "image.write failed with error: ";
+            message += err.what();
+            context->error = message;
+            return;
+        } catch (...) {
+            context->error = std::string("unhandled error");
+            return;
+        }
+    }
+}
+
+void GeneratePreviewAfter(uv_work_t* req) {
+    Nan::HandleScope scope;
+
+    gen_preview_ctx* context = static_cast<gen_preview_ctx*>(req->data);
+    delete req;
+
+    Local<Value> argv[2];
+
+    if (!context->error.empty()) {
+        argv[0] = Exception::Error(Nan::New<String>(context->error.c_str()).ToLocalChecked());
+        argv[1] = Nan::Undefined();
+    } else {
+        argv[0] = Nan::Undefined();
+        Local<Array> dstBlobsArray = Nan::New<Array>();
+        for (int i = 0; i < context->dstLength; ++i) {
+            dstBlobsArray->Set(i, WrapPointer((char*)context->dstBlobs[i].data(), context->dstBlobs[i].length()));
+        }
+        argv[1] = dstBlobsArray;
+    }
+
+    Nan::TryCatch try_catch; // don't quite see the necessity of this
+    context->callback->Call(2, argv);
+
+    if (try_catch.HasCaught()) {
+#if NODE_VERSION_AT_LEAST(0, 12, 0)
+        Nan::FatalException(try_catch);
+#else
+        FatalException(try_catch);
+#endif
+    }
+}
+
+NAN_METHOD(GeneratePreview) {
+    Nan::HandleScope();
+
+    bool isSync = (info.Length() == 1);
+
+    if ( info.Length() < 1 ) {
+        return Nan::ThrowError("generatePreview() requires 1 (option) argument!");
+    }
+
+    if ( !info[ 0 ]->IsObject() ) {
+        return Nan::ThrowError("generatePreview()'s 1st argument should be an object");
+    }
+
+    if( ! isSync && ! info[ 1 ]->IsFunction() ) {
+        return Nan::ThrowError("generatePreview()'s 2nd argument should be a function");
+    }
+
+    Local<Object> obj = Local<Object>::Cast( info[ 0 ] );
+    gen_preview_ctx* context = new gen_preview_ctx();
+    Local<Value> pdfPathValue = obj->Get( Nan::New<String>("pdfPath").ToLocalChecked() );
+
+    context->debug = obj->Get( Nan::New<String>("debug").ToLocalChecked() )->Uint32Value();
+    context->ignoreWarnings = obj->Get( Nan::New<String>("ignoreWarnings").ToLocalChecked() )->Uint32Value();
+
+    if ( pdfPathValue->IsUndefined() ) {
+        return Nan::ThrowError("pdfPath argument should be string.");
+    }
+
+    context->pdfPath = *String::Utf8Value(pdfPathValue);
+    uv_work_t* req = new uv_work_t();
+    req->data = context;
+    if (!isSync) {
+        context->callback = new Nan::Callback(Local<Function>::Cast(info[1]));
+
+        uv_queue_work(uv_default_loop(), req, DoGeneratePreview, (uv_after_work_cb)GeneratePreviewAfter);
+        return;
+    } else {
+        DoGeneratePreview(req);
+
+        if (!context->error.empty()) {
+            Nan::ThrowError(context->error.c_str());
+        } else {
+            Local<Array> dstBlobsArray = Nan::New<Array>();
+            for (int i = 0; i < context->dstLength; ++i) {
+                dstBlobsArray->Set(i, WrapPointer((char* )context->dstBlobs[i].data(), context->dstBlobs[i].length()));
+            }
+
+            info.GetReturnValue().Set(dstBlobsArray);
+            delete req;
+        }
     }
 }
 
@@ -1166,6 +1324,7 @@ void init(Handle<Object> exports) {
     Nan::SetMethod(exports, "version", Version);
     Nan::SetMethod(exports, "getConstPixels", GetConstPixels);
     Nan::SetMethod(exports, "quantumDepth", GetQuantumDepth); // QuantumDepth is already defined
+    Nan::SetMethod(exports, "generatePreview", GeneratePreview);
 }
 
 // There is no semi-colon after NODE_MODULE as it's not a function (see node.h).

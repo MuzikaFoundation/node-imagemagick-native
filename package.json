@@ -24,7 +24,8 @@
     "node": ">=4"
   },
   "dependencies": {
-    "nan": "2.x"
+    "nan": "2.x",
+    "node-gyp": "^3.7.0"
   },
   "devDependencies": {
     "tap": "*"
