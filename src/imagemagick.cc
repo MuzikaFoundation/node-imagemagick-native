@@ -156,7 +156,30 @@ inline Local<Value> WrapPointer(char *ptr) {
 bool ReadImageMagick(Magick::Image *image, Magick::Blob srcBlob, std::string srcFormat, im_ctx_base *context) {
     if( ! srcFormat.empty() ){
         if (context->debug) printf( "reading with format: %s\n", srcFormat.c_str() );
-        image->magick( srcFormat.c_str() );
+
+        try {
+            image->magick( srcFormat.c_str() );
+        }
+        catch (Magick::Warning& warning) {
+            if (!context->ignoreWarnings) {
+                context->error = warning.what();
+                return false;
+            } else if (context->debug) {
+                printf("warning: %s\n", warning.what());
+            }
+        }
+        catch (std::exception& err) {
+            context->error = err.what();
+            return false;
+        }
+        catch (Magick::Exception& err) {
+            context->error = err.what();
+            return false;
+        }
+        catch (...) {
+            context->error = std::string("unhandled error");
+            return false;
+        }
     }
 
     try {
@@ -171,6 +194,10 @@ bool ReadImageMagick(Magick::Image *image, Magick::Blob srcBlob, std::string src
         }
     }
     catch (std::exception& err) {
+        context->error = err.what();
+        return false;
+    }
+    catch (Magick::Exception& err) {
         context->error = err.what();
         return false;
     }
@@ -392,6 +419,10 @@ void DoConvert(uv_work_t* req) {
                 context->error = message;
                 return;
             }
+            catch (Magick::Exception& err) {
+                context->error = err.what();
+                return;
+            }
             catch (...) {
                 context->error = std::string("unhandled error");
                 return;
@@ -432,6 +463,10 @@ void DoConvert(uv_work_t* req) {
                 context->error = message;
                 return;
             }
+            catch (Magick::Exception& err) {
+                context->error = err.what();
+                return;
+            }
             catch (...) {
                 context->error = std::string("unhandled error");
                 return;
@@ -450,6 +485,10 @@ void DoConvert(uv_work_t* req) {
                 std::string message = "image.resize failed with error: ";
                 message            += err.what();
                 context->error = message;
+                return;
+            }
+            catch (Magick::Exception& err) {
+                context->error = err.what();
                 return;
             }
             catch (...) {
@@ -529,6 +568,10 @@ void DoConvert(uv_work_t* req) {
         context->error = message;
         return;
     }
+    catch (Magick::Exception& err) {
+        context->error = err.what();
+        return;
+    }
     catch (...) {
         context->error = std::string("unhandled error");
         return;
@@ -593,6 +636,9 @@ void DoGeneratePreview(uv_work_t* req) {
             context->error = message;
             return;
         }
+    } catch (Magick::Exception& err) {
+        context->error = err.what();
+        return;
     } catch (...) {
         context->error = "unhandled error";
         return;
@@ -616,6 +662,9 @@ void DoGeneratePreview(uv_work_t* req) {
             std::string message = "image.write failed with error: ";
             message += err.what();
             context->error = message;
+            return;
+        } catch (Magick::Exception& err) {
+            context->error = err.what();
             return;
         } catch (...) {
             context->error = std::string("unhandled error");
@@ -865,6 +914,10 @@ void DoIdentify(uv_work_t* req) {
             context->error = message;
         }
     }
+    catch (Magick::Exception& err) {
+        context->error = err.what();
+        return;
+    }
     catch (...) {
         context->error = std::string("unhandled error");
     }
@@ -1045,6 +1098,9 @@ NAN_METHOD(GetConstPixels) {
             return Nan::ThrowError(message.c_str());
         }
     }
+    catch (Magick::Exception& err) {
+        return Nan::ThrowError(err.what());
+    }
     catch (...) {
         return Nan::ThrowError("unhandled error");
     }
@@ -1119,6 +1175,9 @@ NAN_METHOD(QuantizeColors) {
         else {
             return Nan::ThrowError(message.c_str());
         }
+    }
+    catch (Magick::Exception& err) {
+        return Nan::ThrowError(err.what());
     }
     catch (...) {
         return Nan::ThrowError("unhandled error");
